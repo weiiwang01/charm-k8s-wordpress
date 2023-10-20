@@ -1,0 +1,20 @@
+name: Debug with tmate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug-with-tmate:
+    runs-on: ubuntu-latest
+    name: debug
+    steps:
+        - name: Fetch secrets
+          run: >
+            echo '--akismet-api-key ${{ secrets.TEST_AKISMET_API_KEY }} \
+            --openid-username ${{ secrets.TEST_OPENID_USERNAME }}
+            --openid-password ${{ secrets.TEST_OPENID_PASSWORD }}
+            --launchpad-team ${{ secrets.TEST_LAUNCHPAD_TEAM }}' > /tmp/debug_secrets
+        - name: Setup tmate session
+          uses: mxschmitt/action-tmate@v3
+          with:
+            limit-access-to-actor: true
