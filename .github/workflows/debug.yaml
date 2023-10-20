@@ -1,4 +1,4 @@
-name: Debug
+name: Debug with tmate
 
 on:
   push:
