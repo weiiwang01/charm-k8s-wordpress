@@ -1,6 +1,9 @@
-name: Debug with tmate
+name: Debug
 
 on:
+  push:
+    branches:
+      - debug/tmate
   workflow_dispatch:
 
 jobs:
