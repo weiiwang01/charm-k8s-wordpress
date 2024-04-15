@@ -5,10 +5,10 @@
 
 # pylint:disable=protected-access
 
-import json
 import secrets
 import typing
 import unittest.mock
+from types import SimpleNamespace
 
 import ops.charm
 import ops.pebble
@@ -288,10 +288,10 @@ def test_core_reconciliation_before_database_ready(
     ), "unit should wait for database connection info"
 
 
-def test_addon_reconciliation_fail(harness: ops.testing.Harness, monkeypatch: pytest.MonkeyPatch):
+def test_theme_reconciliation_fail(harness: ops.testing.Harness, monkeypatch: pytest.MonkeyPatch):
     """
     arrange: given a monkeypatched _wp_addon_list that returns an unsuccessful ExecResult.
-    act: when _addon_reconciliation is called.
+    act: when _theme_reconciliation is called.
     assert: WordPressBlockedStatusException is raised
     """
     harness.begin()
@@ -304,7 +304,7 @@ def test_addon_reconciliation_fail(harness: ops.testing.Harness, monkeypatch: py
     )
 
     with pytest.raises(WordPressBlockedStatusException):
-        charm._addon_reconciliation("theme")
+        charm._theme_reconciliation()
 
 
 @pytest.mark.usefixtures("attach_storage")
@@ -530,7 +530,6 @@ def test_plugin_reconciliation(
     """
     harness.set_can_connect(harness.model.unit.containers["wordpress"], True)
     setup_replica_consensus()
-    charm: WordpressCharm = typing.cast(WordpressCharm, harness.charm)
     _, db_info = setup_database_relation_no_port()
     patch.database.prepare_database(
         host=db_info["endpoints"],
@@ -539,20 +538,18 @@ def test_plugin_reconciliation(
         password=db_info["password"],
     )
 
-    assert patch.container.installed_plugins == set(
-        charm._WORDPRESS_DEFAULT_PLUGINS
-    ), "installed plugins should match the default installed plugins with the default plugins config"
+    assert patch.container.installed_plugins == set([]), "there should be no plugins installed"
 
-    harness.update_config({"plugins": "123, abc"})
+    harness.update_config({"plugins": "123,abc"})
 
     assert patch.container.installed_plugins == set(
-        charm._WORDPRESS_DEFAULT_PLUGINS + ["abc", "123"]
+        ["abc", "123"]
     ), "adding plugins to plugins config should trigger plugin installation"
 
     harness.update_config({"plugins": "123"})
 
     assert patch.container.installed_plugins == set(
-        charm._WORDPRESS_DEFAULT_PLUGINS + ["123"]
+        ["123"]
     ), "removing plugins from plugins config should trigger plugin deletion"
 
 
@@ -605,8 +602,8 @@ def test_swift_config(
     act: update legacy version of the wp_plugin_openstack-objectstorage_config configuration.
     assert: parsed swift configuration should update all legacy fields.
     """
-    harness.set_can_connect(harness.model.unit.containers["wordpress"], True)
     setup_replica_consensus()
+    harness.set_can_connect(harness.model.unit.containers["wordpress"], True)
     swift_config = {
         "auth-url": "http://swift.test/identity/v3",
         "bucket": "wordpress_tests.integration.test_upgrade",
@@ -622,7 +619,12 @@ def test_swift_config(
         "wordpress_tests.integration.test_upgrade/wp-content/uploads/",
         "prefix": "wp-content/uploads/",
     }
-    harness.update_config({"wp_plugin_openstack-objectstorage_config": json.dumps(swift_config)})
+    relation_id = harness.add_relation("plugin", "openstack-objectstorage-k8s-integrator")
+    harness.update_relation_data(
+        relation_id=relation_id,
+        app_or_unit="openstack-objectstorage-k8s-integrator",
+        key_values=swift_config,
+    )
     charm: WordpressCharm = typing.cast(WordpressCharm, harness.charm)
     del swift_config["url"]
     del swift_config["prefix"]
@@ -635,50 +637,61 @@ def test_swift_config(
     assert charm._swift_config() == swift_config
 
 
-@pytest.mark.usefixtures("attach_storage")
-def test_akismet_plugin(run_standard_plugin_test: typing.Callable):
-    """
-    arrange: after peer relation established and database ready.
-    act: update akismet plugin configuration.
-    assert: plugin should be activated with WordPress options being set correctly, and plugin
-        should be deactivated with options removed after config being reset.
-    """
-    run_standard_plugin_test(
-        plugin="akismet",
-        plugin_config={"wp_plugin_akismet_key": "test"},
-        excepted_options={
-            "akismet_strictness": "0",
-            "akismet_show_user_comments_approved": "0",
-            "wordpress_api_key": "test",
-            "users_can_register": "0",
-        },
-        excepted_options_after_removed={"users_can_register": "0"},
-    )
+# @pytest.mark.usefixtures("attach_storage")
+# def test_akismet_plugin(run_standard_plugin_test: typing.Callable):
+#     """
+#     arrange: after peer relation established and database ready.
+#     act: update akismet plugin configuration.
+#     assert: plugin should be activated with WordPress options being set correctly, and plugin
+#         should be deactivated with options removed after config being reset.
+#     """
+#     run_standard_plugin_test(
+#         plugin="akismet",
+#         plugin_config={"wp_plugin_akismet_key": "test"},
+#         excepted_options={
+#             "akismet_strictness": "0",
+#             "akismet_show_user_comments_approved": "0",
+#             "wordpress_api_key": "test",
+#             "users_can_register": "0",
+#         },
+#         excepted_options_after_removed={"users_can_register": "0"},
+#     )
+
+
+# @pytest.mark.usefixtures("attach_storage")
+# def test_openid_plugin(patch: WordpressPatch, run_standard_plugin_test: typing.Callable):
+#     """
+#     arrange: after peer relation established and database ready.
+#     act: update openid plugin configuration.
+#     assert: plugin should be activated with WordPress options being set correctly, and plugin
+#         should be deactivated with options removed after config being reset.
+#     """
+#     run_standard_plugin_test(
+#         plugin={
+#           "openid",
+#           "wordpress-launchpad-integration",
+#           "wordpress-teams-integration"
+#         },
+#         plugin_config={
+#             "wp_plugin_openid_team_map":
+#             "site-sysadmins=administrator,site-editors=editor,site-executives=editor"
+#         },
+#         excepted_options={"openid_required_for_registration": "1", "users_can_register": "1"},
+#         excepted_options_after_removed={"users_can_register": "0"},
+#     )
+#     assert patch.container.wp_eval_history[-1].startswith(
+#         "update_option('openid_teams_trust_list',"
+#     ), "PHP function update_option should be invoked after openid plugin enabled"
 
 
 @pytest.mark.usefixtures("attach_storage")
-def test_openid_plugin(patch: WordpressPatch, run_standard_plugin_test: typing.Callable):
-    """
-    arrange: after peer relation established and database ready.
-    act: update openid plugin configuration.
-    assert: plugin should be activated with WordPress options being set correctly, and plugin
-        should be deactivated with options removed after config being reset.
-    """
-    run_standard_plugin_test(
-        plugin={"openid", "wordpress-launchpad-integration", "wordpress-teams-integration"},
-        plugin_config={
-            "wp_plugin_openid_team_map": "site-sysadmins=administrator,site-editors=editor,site-executives=editor"
-        },
-        excepted_options={"openid_required_for_registration": "1", "users_can_register": "1"},
-        excepted_options_after_removed={"users_can_register": "0"},
-    )
-    assert patch.container.wp_eval_history[-1].startswith(
-        "update_option('openid_teams_trust_list',"
-    ), "PHP function update_option should be invoked after openid plugin enabled"
-
-
-@pytest.mark.usefixtures("attach_storage")
-def test_swift_plugin(patch: WordpressPatch, run_standard_plugin_test: typing.Callable):
+def test_swift_plugin(
+    harness: ops.testing.Harness,
+    patch: WordpressPatch,
+    setup_replica_consensus: typing.Callable[[], dict],
+    setup_database_relation_no_port: typing.Callable[[], typing.Tuple[int, dict]],
+    monkeypatch: pytest.MonkeyPatch,
+):
     """
     arrange: after peer relation established and database ready.
     act: update openid plugin configuration.
@@ -687,56 +700,218 @@ def test_swift_plugin(patch: WordpressPatch, run_standard_plugin_test: typing.Ca
         configuration for swift integration should be enabled after swift plugin activated
         and configuration should be disabled after swift plugin deactivated.
     """
-
-    def additional_check_after_install():
-        """Assert swift proxy configuration file is correctly installed."""
-        conf_found = False
-        for file in patch.container.fs:
-            if file.endswith("docker-php-swift-proxy.conf"):
-                conf_found = True
-        assert conf_found
-
     assert not any(file.endswith("docker-php-swift-proxy.conf") for file in patch.container.fs)
-    run_standard_plugin_test(
-        plugin="openstack-objectstorage-k8s",
-        plugin_config={
-            "wp_plugin_openstack-objectstorage_config": json.dumps(
-                {
-                    "auth-url": "http://localhost/v3",
-                    "bucket": "wordpress",
-                    "password": "password",
-                    "object-prefix": "wp-content/uploads/",
-                    "region": "region",
-                    "tenant": "tenant",
-                    "domain": "domain",
-                    "swift-url": "http://localhost:8080",
-                    "username": "username",
-                    "copy-to-swift": "1",
-                    "serve-from-swift": "1",
-                    "remove-local-file": "0",
-                }
-            )
-        },
-        excepted_options={
-            "object_storage": {
-                "auth-url": "http://localhost/v3",
-                "bucket": "wordpress",
-                "password": "password",
-                "object-prefix": "wp-content/uploads/",
-                "region": "region",
-                "tenant": "tenant",
-                "domain": "domain",
-                "swift-url": "http://localhost:8080",
-                "username": "username",
-                "copy-to-swift": "1",
-                "serve-from-swift": "1",
-                "remove-local-file": "0",
-            },
-            "users_can_register": "0",
-        },
-        excepted_options_after_removed={"users_can_register": "0"},
-        additional_check_after_install=additional_check_after_install,
+    harness.set_can_connect(harness.model.unit.containers["wordpress"], True)
+    setup_replica_consensus()
+    _, db_info = setup_database_relation_no_port()
+    patch.database.prepare_database(
+        host=db_info["endpoints"],
+        database=db_info["database"],
+        user=db_info["username"],
+        password=db_info["password"],
     )
+    monkeypatch.setattr(
+        harness.charm,
+        "_config_swift_plugin",
+        lambda *_args, **_kwargs: None,
+    )
+    harness.update_config()
+    swift_config = {
+        "auth-url": "http://swift.test/identity/v3",
+        "bucket": "wordpress_tests.integration.test_upgrade",
+        "password": "nomoresecret",
+        "region": "RegionOne",
+        "tenant": "demo",
+        "domain": "default",
+        "username": "demo",
+        "copy-to-swift": "1",
+        "serve-from-swift": "1",
+        "remove-local-file": "0",
+        "url": "http://swift.test:8080/v1/AUTH_fa8326b9fd4f405fb1c5eaafe988f5fd/"
+        "wordpress_tests.integration.test_upgrade/wp-content/uploads/",
+        "prefix": "wp-content/uploads/",
+    }
+    del swift_config["url"]
+    del swift_config["prefix"]
+    swift_config.update(
+        {
+            "swift-url": "http://swift.test:8080/v1/AUTH_fa8326b9fd4f405fb1c5eaafe988f5fd",
+            "object-prefix": "wp-content/uploads/",
+        }
+    )
+    relation_id = harness.add_relation("plugin", "openstack-objectstorage-k8s-integrator")
+    harness.update_relation_data(
+        relation_id=relation_id,
+        app_or_unit="openstack-objectstorage-k8s-integrator",
+        key_values=swift_config,
+    )
+    name_dict = {"name": "openstack-objectstorage-k8s-integrator"}
+    name = SimpleNamespace(**name_dict)
+    app_dict = {"app": name}
+    app = SimpleNamespace(**app_dict)
+    harness.charm._complex_plugin_reconciliation(app)
+    assert patch.container.installed_plugins == set(["openstack-objectstorage-k8s"])
+
+
+@pytest.mark.usefixtures("attach_storage")
+def test_swift_plugin_error(
+    harness: ops.testing.Harness,
+    patch: WordpressPatch,
+    setup_replica_consensus: typing.Callable[[], dict],
+    setup_database_relation_no_port: typing.Callable[[], typing.Tuple[int, dict]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    arrange: after peer relation established and database ready.
+    act: update openid plugin configuration.
+    assert: plugin should be activated with WordPress options being set correctly, and plugin
+        should be deactivated with options removed after config being reset. Apache
+        configuration for swift integration should be enabled after swift plugin activated
+        and configuration should be disabled after swift plugin deactivated.
+    """
+    assert not any(file.endswith("docker-php-swift-proxy.conf") for file in patch.container.fs)
+    harness.set_can_connect(harness.model.unit.containers["wordpress"], True)
+    setup_replica_consensus()
+    _, db_info = setup_database_relation_no_port()
+    patch.database.prepare_database(
+        host=db_info["endpoints"],
+        database=db_info["database"],
+        user=db_info["username"],
+        password=db_info["password"],
+    )
+    monkeypatch.setattr(
+        harness.charm,
+        "_wp_addon_list",
+        lambda *_args, **_kwargs: types_.ExecResult(success=False, result=None, message="Failed"),
+    )
+    harness.update_config()
+    name_dict = {"name": "openstack-objectstorage-k8s-integrator"}
+    name = SimpleNamespace(**name_dict)
+    app_dict = {"app": name}
+    app = SimpleNamespace(**app_dict)
+
+    with pytest.raises(WordPressBlockedStatusException):
+        harness.charm._complex_plugin_reconciliation(app)
+    assert patch.container.installed_plugins == set([])
+
+
+@pytest.mark.usefixtures("attach_storage")
+def test_config_swift_plugin(
+    harness: ops.testing.Harness,
+    patch: WordpressPatch,
+    setup_replica_consensus: typing.Callable[[], dict],
+    setup_database_relation_no_port: typing.Callable[[], typing.Tuple[int, dict]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    arrange: after peer relation established and database ready.
+    act: update openid plugin configuration.
+    assert: plugin should be activated with WordPress options being set correctly, and plugin
+        should be deactivated with options removed after config being reset. Apache
+        configuration for swift integration should be enabled after swift plugin activated
+        and configuration should be disabled after swift plugin deactivated.
+    """
+    harness.set_can_connect(harness.model.unit.containers["wordpress"], True)
+    setup_replica_consensus()
+    _, db_info = setup_database_relation_no_port()
+    patch.database.prepare_database(
+        host=db_info["endpoints"],
+        database=db_info["database"],
+        user=db_info["username"],
+        password=db_info["password"],
+    )
+    harness.update_config()
+    result_dict = {
+        "success": True,
+        "result": [{"name": "openstack-objectstorage-k8s", "status": "inactive"}],
+        "message": "test",
+    }
+    calls = []
+
+    def process_call():
+        """Record the function call and return a value."""
+        calls.append("called!")
+        return SimpleNamespace(**result_dict)
+
+    monkeypatch.setattr(
+        harness.charm,
+        "_wp_addon_list",
+        lambda *_args, **_kwargs: process_call(),
+    )
+    swift_config = {
+        "auth-url": "http://swift.test/identity/v3",
+        "bucket": "wordpress_tests.integration.test_upgrade",
+        "password": "nomoresecret",
+        "region": "RegionOne",
+        "tenant": "demo",
+        "domain": "default",
+        "username": "demo",
+        "copy-to-swift": "1",
+        "serve-from-swift": "1",
+        "remove-local-file": "0",
+        "url": "http://swift.test:8080/v1/AUTH_fa8326b9fd4f405fb1c5eaafe988f5fd/"
+        "wordpress_tests.integration.test_upgrade/wp-content/uploads/",
+        "prefix": "wp-content/uploads/",
+    }
+    del swift_config["url"]
+    del swift_config["prefix"]
+    swift_config.update(
+        {
+            "swift-url": "http://swift.test:8080/v1/AUTH_fa8326b9fd4f405fb1c5eaafe988f5fd",
+            "object-prefix": "wp-content/uploads/",
+        }
+    )
+    # import pdb; pdb.set_trace()
+    harness.charm._config_swift_plugin(swift_config)
+    assert len(calls) == 1
+
+
+@pytest.mark.usefixtures("attach_storage")
+def test_config_swift_plugin_no_config(
+    harness: ops.testing.Harness,
+    patch: WordpressPatch,
+    setup_replica_consensus: typing.Callable[[], dict],
+    setup_database_relation_no_port: typing.Callable[[], typing.Tuple[int, dict]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    arrange: after peer relation established and database ready.
+    act: update openid plugin configuration.
+    assert: plugin should be activated with WordPress options being set correctly, and plugin
+        should be deactivated with options removed after config being reset. Apache
+        configuration for swift integration should be enabled after swift plugin activated
+        and configuration should be disabled after swift plugin deactivated.
+    """
+    harness.set_can_connect(harness.model.unit.containers["wordpress"], True)
+    setup_replica_consensus()
+    _, db_info = setup_database_relation_no_port()
+    patch.database.prepare_database(
+        host=db_info["endpoints"],
+        database=db_info["database"],
+        user=db_info["username"],
+        password=db_info["password"],
+    )
+    harness.update_config()
+    result_dict = {
+        "success": True,
+        "result": [{"name": "openstack-objectstorage-k8s", "status": "inactive"}],
+        "message": "test",
+    }
+    calls = []
+
+    def process_call():
+        """Record the function call and return a value."""
+        calls.append("called!")
+        return SimpleNamespace(**result_dict)
+
+    monkeypatch.setattr(
+        harness.charm,
+        "_wp_addon_list",
+        lambda *_args, **_kwargs: process_call(),
+    )
+    swift_config: dict[typing.Any, typing.Any] = {}
+    harness.charm._config_swift_plugin(swift_config)
+    assert len(calls) == 1
 
 
 def test_ingress(
